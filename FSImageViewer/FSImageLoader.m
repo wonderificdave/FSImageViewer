@@ -22,13 +22,13 @@
 //  THE SOFTWARE.
 //
 
-#import <EGOCache/EGOCache.h>
+#import <AFNetworking/AFImageDownloader.h>
 #import <CommonCrypto/CommonDigest.h>
 #import "FSImageLoader.h"
-#import "AFHTTPRequestOperation.h"
 
 @implementation FSImageLoader {
-    NSMutableArray *runningRequests;
+    AFImageDownloader *_downloader;
+    NSMutableArray<AFImageDownloadReceipt *> *runningRequests;
 }
 
 + (FSImageLoader *)sharedInstance {
@@ -44,6 +44,7 @@
     self = [super init];
     if (self) {
         self.timeoutInterval = 30.0;
+        _downloader = [[AFImageDownloader alloc] init];
         runningRequests = [[NSMutableArray alloc] init];
     }
 
@@ -55,15 +56,15 @@
 }
 
 - (void)cancelAllRequests {
-    for (AFHTTPRequestOperation *imageRequestOperation in runningRequests) {
-        [imageRequestOperation cancel];
+    for (AFImageDownloadReceipt *receipt in runningRequests) {
+        [_downloader cancelTaskForImageDownloadReceipt:receipt];
     }
 }
 
 - (void)cancelRequestForUrl:(NSURL *)aURL {
-    for (AFHTTPRequestOperation *imageRequestOperation in runningRequests) {
-        if ([imageRequestOperation.request.URL isEqual:aURL]) {
-            [imageRequestOperation cancel];
+    for (AFImageDownloadReceipt *receipt in runningRequests) {
+        if ([receipt.task.originalRequest.URL isEqual:aURL]) {
+            [_downloader cancelTaskForImageDownloadReceipt:receipt];
             break;
         }
     }
@@ -76,61 +77,37 @@
                 NSLocalizedDescriptionKey : @"You must set a url"
         }];
         imageBlock(nil, error);
-    };
-    
-    NSString *urlString = [[aURL absoluteString] copy];
-    NSData *data = [urlString dataUsingEncoding:NSUTF8StringEncoding];
-    uint8_t digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
-    NSMutableString *urlStringSha1 = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-    for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
-        [urlStringSha1 appendFormat:@"%02x", digest[i]];
-    }
-    NSString *cacheKey = [NSString stringWithFormat:@"FSImageLoader-%@", [urlStringSha1 copy]];
-    UIImage *anImage = [[EGOCache globalCache] imageForKey:cacheKey];
-    
-    if (!anImage) {
-        // Deprecated cacheKey
-        NSString *deprecatedCacheKey = [NSString stringWithFormat:@"FSImageLoader-%lu", (unsigned long) [[aURL description] hash]];
-        anImage = [[EGOCache globalCache] imageForKey:deprecatedCacheKey];
+        return;
     }
 
+    [self cancelRequestForUrl:aURL];
 
-    if (anImage) {
+    NSURLRequest *urlRequest = [[NSURLRequest alloc] initWithURL:aURL cachePolicy:NSURLRequestReturnCacheDataElseLoad timeoutInterval:_timeoutInterval];
+
+    AFImageDownloadReceipt *receipt;
+
+    receipt = [_downloader downloadImageForURLRequest:urlRequest success:^(NSURLRequest * _Nonnull request, NSHTTPURLResponse * _Nullable response, UIImage * _Nonnull responseObject) {
+
         if (imageBlock) {
-            imageBlock(anImage, nil);
+            imageBlock(responseObject, nil);
         }
-    }
-    else {
-        [self cancelRequestForUrl:aURL];
 
-        NSURLRequest *urlRequest = [[NSURLRequest alloc] initWithURL:aURL cachePolicy:NSURLRequestReturnCacheDataElseLoad timeoutInterval:_timeoutInterval];
-        AFHTTPRequestOperation *imageRequestOperation = [[AFHTTPRequestOperation alloc] initWithRequest:urlRequest];
-        imageRequestOperation.responseSerializer = [AFImageResponseSerializer serializer];
-        [runningRequests addObject:imageRequestOperation];
-        __weak AFHTTPRequestOperation *imageRequestOperationForBlock = imageRequestOperation;
+        if (receipt != nil) {
+            [runningRequests removeObject:receipt];
+        }
 
-        [imageRequestOperation setCompletionBlockWithSuccess:^(AFHTTPRequestOperation *operation, id responseObject) {
-            UIImage *image = responseObject;
-            [[EGOCache globalCache] setImage:image forKey:cacheKey];
-            if (imageBlock) {
-                imageBlock(image, nil);
-            }
-            [runningRequests removeObject:imageRequestOperationForBlock];
-        } failure:^(AFHTTPRequestOperation *operation, NSError *error) {
-            if (imageBlock) {
-                imageBlock(nil, error);
-            }
-            [runningRequests removeObject:imageRequestOperationForBlock];
-        }];
-        
-        [imageRequestOperation setDownloadProgressBlock:^(NSUInteger bytesRead, long long totalBytesRead, long long totalBytesExpectedToRead) {
-            if (progress) {
-                progress((float)totalBytesRead / totalBytesExpectedToRead);
-            }
-        }];
-        
-        [imageRequestOperation start];
+    } failure:^(NSURLRequest * _Nonnull request, NSHTTPURLResponse * _Nullable response, NSError * _Nonnull error) {
+        if (imageBlock) {
+            imageBlock(nil, error);
+        }
+
+        if (receipt != nil) {
+            [runningRequests removeObject:receipt];
+        }
+    }];
+
+    if (receipt != nil) {
+        [runningRequests addObject:receipt];
     }
 }
 

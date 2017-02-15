@@ -539,7 +539,7 @@
                 }
             }
         }
-    defaultString = [bundle localizedStringForKey:key value:defaultString table:nil];
+    defaultString = [bundle localizedStringForKey:key value:defaultString table:nil] ?: defaultString;
     return [[NSBundle bundleForClass:[self class]] localizedStringForKey:key value:defaultString table:nil];
 }
 
